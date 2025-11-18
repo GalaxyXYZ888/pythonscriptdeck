@@ -1,32 +1,8 @@
-import streamDeck, { action, DidReceiveSettingsEvent, KeyDownEvent, SingletonAction, WillAppearEvent } from "@elgato/streamdeck";
-import { ChildProcess, spawn } from "child_process";
-import * as os from "os";
-import * as path from "node:path";
-
-
-
-/**
- * Error mapping for python errors
- */
-const pythonErrorMap: { [key: string]: string } = {
-	"SyntaxError": "Python\nSyntax\nError",
-	"NameError": "Python\nName\nError",
-	"TypeError": "Python\nType\nError",
-	"ValueError": "Python\nValue\nError",
-	"ZeroDivisionError": "Python\nZeroDiv\nError",
-	"IndexError": "Python\nIndex\nError",
-	"KeyError": "Python\nKey\nError",
-	"AttributeError": "Python\nAttribute\nError",
-	"ImportError": "Python\nImport\nError",
-	"No such file or directory": "Python\nFile\nError",
-	"ModuleNotFoundError": "Python\nModule\nError",
-	"RuntimeError": "Python\nRuntime\nError",
-	"MemoryError": "Python\nMemory\nError",
-	"OverflowError": "Python\nOverflow\nError",
-	"SystemError": "Python\nSystem\nError",
-	"Microsoft Store": "Python\nnot found\nError",
-	
-};
+import streamDeck, { action, DidReceiveSettingsEvent, KeyDownEvent, SingletonAction, WillAppearEvent, WillDisappearEvent } from "@elgato/streamdeck";
+import { ChildProcess } from "child_process";
+import * as fs from "fs";
+import { createChildProcess, getFileNameFromPath, mapPythonError } from "../utils/python-utils";
+import { processManager } from "../utils/process-manager";
 
 @action({ UUID: "com.nicoohagedorn.pythonscriptdeck.script" })
 export class PythonScript extends SingletonAction<PythonScriptSettings> {
@@ -35,46 +11,31 @@ export class PythonScript extends SingletonAction<PythonScriptSettings> {
 	 * starting up, or the user navigating between pages / folders etc.. There is also an inverse of this event in the form of {@link streamDeck.client.onWillDisappear}. In this example,
 	 * we're setting the title to the "count" that is incremented in {@link PythonScript.onKeyDown}.
 	 */
-	onWillAppear(ev: WillAppearEvent<PythonScriptSettings>): void | Promise<void> {
+	async onWillAppear(ev: WillAppearEvent<PythonScriptSettings>): Promise<void> {
 		const settings = ev.payload.settings;
-		if (settings.path) {
-			if (settings.path.includes(".py")) {
-				ev.action.setImage("imgs/actions/gemini_icons/pyFileLoaded.png")
-				var venvname = "";
-				if (settings.useVenv && settings.venvPath) {
-					streamDeck.logger.info(settings.venvPath);
-					venvname = settings.venvPath.substring(0, settings.venvPath.lastIndexOf("/"));
-					streamDeck.logger.info(venvname);
-					venvname = venvname.substring(venvname.lastIndexOf("/") + 1, venvname.length) + "\n";
-					streamDeck.logger.info(venvname);
-					venvname = `venv:\n ${venvname}`
-
-				}
-				ev.action.setTitle(`${venvname}${this.getFileNameFromPath(settings.path)}`);
+		if (settings.path && settings.path.includes(".py")) {
+			await ev.action.setImage("imgs/actions/gemini_icons/pyFileLoaded.png");
+			let venvname = "";
+			if (settings.useVenv && settings.venvPath) {
+				const venvFolderName = getFileNameFromPath(settings.venvPath);
+				venvname = `venv:\n ${venvFolderName}\n`;
 			}
+			await ev.action.setTitle(`${venvname}${getFileNameFromPath(settings.path)}`);
 		}
-
 	}
 
-	onDidReceiveSettings(ev: DidReceiveSettingsEvent<PythonScriptSettings>): Promise<void> | void {
+	async onDidReceiveSettings(ev: DidReceiveSettingsEvent<PythonScriptSettings>): Promise<void> {
 		const settings = ev.payload.settings;
-		if (settings.path) {
-			if (settings.path.includes(".py")) {
-				
-				var venvname = "";
-				if (settings.useVenv && settings.venvPath) {
-					streamDeck.logger.info(settings.venvPath);
-					venvname = settings.venvPath.substring(0, settings.venvPath.lastIndexOf("/"));
-					streamDeck.logger.info(venvname);
-					venvname = venvname.substring(venvname.lastIndexOf("/") + 1, venvname.length) + "\n";
-					streamDeck.logger.info(venvname);
-					venvname = `venv:\n ${venvname}`
-					ev.action.setImage("imgs/actions/gemini_icons/pyVirtEnvActive.png")
-				}else {
-					ev.action.setImage("imgs/actions/gemini_icons/pyFileLoaded.png")
-				}
-				ev.action.setTitle(`${venvname}${this.getFileNameFromPath(settings.path)}`);
+		if (settings.path && settings.path.includes(".py")) {
+			let venvname = "";
+			if (settings.useVenv && settings.venvPath) {
+				const venvFolderName = getFileNameFromPath(settings.venvPath);
+				venvname = `venv:\n ${venvFolderName}\n`;
+				await ev.action.setImage("imgs/actions/gemini_icons/pyVirtEnvActive.png");
+			} else {
+				await ev.action.setImage("imgs/actions/gemini_icons/pyFileLoaded.png");
 			}
+			await ev.action.setTitle(`${venvname}${getFileNameFromPath(settings.path)}`);
 		}
 	}
 
@@ -89,45 +50,59 @@ export class PythonScript extends SingletonAction<PythonScriptSettings> {
 		const settings = ev.payload.settings;
 		const scriptPath = settings.path;
 		const useVenv = Boolean(settings.useVenv);
+
+		if (!scriptPath) {
+			streamDeck.logger.warn("PythonScript: No script path configured");
+			await ev.action.showAlert();
+			return;
+		}
+
+		if (!fs.existsSync(scriptPath)) {
+			streamDeck.logger.error(`PythonScript: Script not found at path: ${scriptPath}`);
+			await ev.action.setImage("imgs/actions/pyFilecheckFailed.png");
+			await ev.action.setTitle("Script\nNot Found");
+			await ev.action.showAlert();
+			return;
+		}
+
 		let pythonProcess: ChildProcess | undefined;
 		if (scriptPath) {
 			streamDeck.logger.info(`path to script is: ${scriptPath}`);
-			pythonProcess = this.createChildProcess(useVenv, settings.venvPath, scriptPath);
+			pythonProcess = createChildProcess(useVenv, settings.venvPath, scriptPath, settings.pythonInterpreter);
+
+			// Register process for lifecycle management with 2-minute timeout for one-off scripts
+			if (pythonProcess) {
+				processManager.register(ev.action.id, pythonProcess, {
+					timeout: 2 * 60 * 1000, // 2 minutes
+					enabled: true
+				});
+			}
 
 			if (pythonProcess && pythonProcess.stdout) {
 				streamDeck.logger.info(`start reading output`);
-				pythonProcess.stdout.on("data", (data: { toString: () => string }) => {
+				pythonProcess.stdout.on("data", async (data: { toString: () => string }) => {
 					const output = data.toString().trim();
 					streamDeck.logger.info(`stdout: ${output}`);
 					if (settings.displayValues) {
-						ev.action.setTitle(output);
+						await ev.action.setTitle(output);
 					}
 
 					if (settings.image1 && output === (settings.value1 ?? "")) {
-						ev.action.setImage(settings.image1);
+						await ev.action.setImage(settings.image1);
 					} else if (settings.image2 && output === (settings.value2 ?? "")) {
-						ev.action.setImage(settings.image2);
+						await ev.action.setImage(settings.image2);
 					} else {
-						ev.action.setImage("imgs/actions/gemini_icons/pyFileLoaded.png");
+						await ev.action.setImage("imgs/actions/gemini_icons/pyFileLoaded.png");
 					}
 				});
 
-				pythonProcess.stderr?.on("data", (data: { toString: () => string }) => {
+				pythonProcess.stderr?.on("data", async (data: { toString: () => string }) => {
 					const errorString = data.toString().trim().replace(/(?:\r\n|\r|\n)/g, " ");
-					streamDeck.logger.error(`stderr: ${errorString}`);
-					ev.action.setImage("imgs/actions/pyFilecheckFailed.png");
-					let errorTitle = "python\nother\nissue";
-					for (const key in pythonErrorMap) {
-						if (errorString.includes(key)) {
-							errorTitle = pythonErrorMap[key];
-							break;
-						}
-					}
-					if (errorTitle === "python\nother\nissue") {
-						streamDeck.logger.error(errorString);
-					}
-					ev.action.setTitle(errorTitle);
-					ev.action.showAlert();
+					streamDeck.logger.error(`Python error: ${errorString}`);
+					await ev.action.setImage("imgs/actions/pyFilecheckFailed.png");
+					const errorTitle = mapPythonError(errorString);
+					await ev.action.setTitle(errorTitle);
+					await ev.action.showAlert();
 				});
 
 				pythonProcess.on("close", (code: number | null) => {
@@ -139,41 +114,13 @@ export class PythonScript extends SingletonAction<PythonScriptSettings> {
 
 	}
 
-	createChildProcess(useVenv: boolean, venvPath: string | undefined, scriptPath: string) {
-		let pythonProcess: ChildProcess | undefined;
-		const isWindows = os.platform() === "win32";
-		const normalizedScriptPath = isWindows ? path.win32.normalize(scriptPath) : scriptPath;
-
-		if (useVenv && venvPath) {
-			if (isWindows) {
-				const pythonExecutable = path.win32.join(venvPath, "Scripts", "python.exe");
-				pythonProcess = spawn(pythonExecutable, [normalizedScriptPath], { windowsHide: true });
-			} else {
-				const pythonExecutable = path.posix.join(venvPath, "bin", "python3");
-				pythonProcess = spawn(pythonExecutable, [normalizedScriptPath]);
-			}
-		} else {
-			if (isWindows) {
-				pythonProcess = spawn("python", [normalizedScriptPath], { windowsHide: true });
-			} else {
-				pythonProcess = spawn("python3", [normalizedScriptPath]);
-			}
-		}
-
-		pythonProcess?.on("error", (error: Error) => {
-			streamDeck.logger.error(`Failed to start python process: ${error.message}`);
-		});
-
-		return pythonProcess;
+	/**
+	 * Clean up any running processes when the action disappears.
+	 */
+	onWillDisappear(ev: WillDisappearEvent<PythonScriptSettings>): void {
+		streamDeck.logger.info(`PythonScript: Cleaning up process for action ${ev.action.id}`);
+		processManager.cleanup(ev.action.id);
 	}
-
-	getFileNameFromPath(path: string): string {
-		//geht the FileName from the path
-		const fileName = path.substring(path.lastIndexOf("/") + 1);
-		return fileName;
-	}
-
-	
 }
 
 /**
@@ -188,5 +135,6 @@ export type PythonScriptSettings = {
 	displayValues?: boolean;
 	useVenv?: boolean;
 	venvPath?: string;
+	pythonInterpreter?: string;
 
 };

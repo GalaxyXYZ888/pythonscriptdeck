@@ -1,5 +1,6 @@
 import streamDeck, { action, DidReceiveSettingsEvent, KeyDownEvent, SingletonAction, WillAppearEvent, WillDisappearEvent } from "@elgato/streamdeck";
 import { pyBGService, ServiceState } from "../python-bg-service";
+import { getFileNameFromPath } from "../utils/python-utils";
 
 
 @action({ UUID: "com.nicoohagedorn.pythonscriptdeck.service" })
@@ -9,48 +10,32 @@ export class PythonService extends SingletonAction<PythonServiceSettings> {
 	 * starting up, or the user navigating between pages / folders etc.. There is also an inverse of this event in the form of {@link streamDeck.client.onWillDisappear}. In this example,
 	 * we're setting the title to the "count" that is incremented in {@link PythonScript.onKeyDown}.
 	 */
-	onWillAppear(ev: WillAppearEvent<PythonServiceSettings>): void | Promise<void> {
+	async onWillAppear(ev: WillAppearEvent<PythonServiceSettings>): Promise<void> {
 		const settings = ev.payload.settings;
-		if (settings.path) {
-			if (settings.path.includes(".py")) {
-				ev.action.setImage("imgs/actions/pyServiceIcon.png")
-				var venvname = "";
-				if (settings.useVenv && settings.venvPath) {
-					streamDeck.logger.info(settings.venvPath);
-					venvname = settings.venvPath.substring(0, settings.venvPath.lastIndexOf("/"));
-					streamDeck.logger.info(venvname);
-					venvname = venvname.substring(venvname.lastIndexOf("/") + 1, venvname.length) + "\n";
-					streamDeck.logger.info(venvname);
-					venvname = `venv:\n ${venvname}`
-
-				}
-				ev.action.setTitle(`${venvname}${this.getFileNameFromPath(settings.path)}`);
+		if (settings.path && settings.path.includes(".py")) {
+			await ev.action.setImage("imgs/actions/pyServiceIcon.png");
+			let venvname = "";
+			if (settings.useVenv && settings.venvPath) {
+				const venvFolderName = getFileNameFromPath(settings.venvPath);
+				venvname = `venv:\n ${venvFolderName}\n`;
 			}
+			await ev.action.setTitle(`${venvname}${getFileNameFromPath(settings.path)}`);
 		}
 		if (this.checkSettingsComplete(settings)) {
 			pyBGService.registerAction(ev);
 		}
-
-
 	}
 
-	onDidReceiveSettings(ev: DidReceiveSettingsEvent<PythonServiceSettings>): Promise<void> | void {
+	async onDidReceiveSettings(ev: DidReceiveSettingsEvent<PythonServiceSettings>): Promise<void> {
 		const settings = ev.payload.settings;
-		if (settings.path) {
-			if (settings.path.includes(".py")) {
-				ev.action.setImage("imgs/actions/pyServiceIcon.png")
-				var venvname = "";
-				if (settings.useVenv && settings.venvPath) {
-					streamDeck.logger.info(settings.venvPath);
-					venvname = settings.venvPath.substring(0, settings.venvPath.lastIndexOf("/"));
-					streamDeck.logger.info(venvname);
-					venvname = venvname.substring(venvname.lastIndexOf("/") + 1, venvname.length) + "\n";
-					streamDeck.logger.info(venvname);
-					venvname = `venv:\n ${venvname}`
-
-				}
-				ev.action.setTitle(`${venvname}${this.getFileNameFromPath(settings.path)}`);
+		if (settings.path && settings.path.includes(".py")) {
+			await ev.action.setImage("imgs/actions/pyServiceIcon.png");
+			let venvname = "";
+			if (settings.useVenv && settings.venvPath) {
+				const venvFolderName = getFileNameFromPath(settings.venvPath);
+				venvname = `venv:\n ${venvFolderName}\n`;
 			}
+			await ev.action.setTitle(`${venvname}${getFileNameFromPath(settings.path)}`);
 		}
 		pyBGService.registerAction(ev);
 	}
@@ -71,23 +56,17 @@ export class PythonService extends SingletonAction<PythonServiceSettings> {
 		// Update the count from the settings.
 		const isRunning = pyBGService.getState() === ServiceState.running;
 		if (isRunning) {
-			pyBGService.stop(ev);
+			await pyBGService.stop(ev);
 			return;
 		}
 
 		if (this.checkSettingsComplete(ev.payload.settings)) {
-			pyBGService.start(ev);
+			await pyBGService.start(ev);
 		} else {
 			streamDeck.logger.warn("Cannot start background service - incomplete settings");
-			ev.action.showAlert();
+			await ev.action.showAlert();
 		}
 
-	}
-
-
-	getFileNameFromPath(path: string): string {
-		const fileName = path.substring(path.lastIndexOf("/") + 1);
-		return fileName;
 	}
 
 	checkSettingsComplete(settings: PythonServiceSettings): boolean {
@@ -127,5 +106,6 @@ export type PythonServiceSettings = {
 	venvPath?: string;
 	interval?: number | string;
 	id?: string;
+	pythonInterpreter?: string;
 
 };

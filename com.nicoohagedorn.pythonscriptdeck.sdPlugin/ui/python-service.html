@@ -28,6 +28,11 @@
         placeholder="seconds between execution"
         required>
     </sdpi-item>
+    <sdpi-item label="Python interpreter (optional)">
+        <sdpi-textfield
+        setting="pythonInterpreter"
+        placeholder="e.g. python, py -3, C:\\Python312\\python.exe, /opt/homebrew/bin/python3"></sdpi-textfield>
+    </sdpi-item>
     <sdpi-item label="return Value 1">
         <sdpi-textfield
         setting="value1"
@@ -47,7 +52,7 @@
     </sdpi-item>
     <sdpi-item label="display Image for Value 2">
         <sdpi-file setting="image2" accept="image/png, image/jpeg, image/gif"></sdpi-file>
-    </sdpi-item>   
+    </sdpi-item>
 </body>
 
 </html>

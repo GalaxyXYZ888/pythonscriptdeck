@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html>
+
+<head lang="en">
+    <title>AI Python Code Generator</title>
+    <meta charset="utf-8" />
+    <script src="https://cdn.jsdelivr.net/gh/geekyeggo/sdpi-components@v3/dist/sdpi-components.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 10px;
+        }
+
+        .code-display {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 10px;
+            margin-bottom: 10px;
+        }
+
+        .output-display {
+            background-color: #f5f5f5;
+            color: #333;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 150px;
+            overflow-y: auto;
+            margin-top: 10px;
+            border: 1px solid #ccc;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .status-message {
+            padding: 8px;
+            margin-top: 10px;
+            border-radius: 4px;
+            display: none;
+        }
+
+        .status-message.info {
+            background-color: #e3f2fd;
+            color: #1976d2;
+            border: 1px solid #1976d2;
+        }
+
+        .status-message.error {
+            background-color: #ffebee;
+            color: #c62828;
+            border: 1px solid #c62828;
+        }
+
+        .status-message.success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+            border: 1px solid #2e7d32;
+        }
+
+        sdpi-button {
+            width: 100%;
+        }
+
+        .help-text {
+            font-size: 11px;
+            color: #666;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <sdpi-item label="AI Provider">
+        <sdpi-select setting="provider" id="providerSelect">
+            <option value="openai">OpenAI (GPT)</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="google">Google (Gemini)</option>
+            <option value="groq">Groq (Llama)</option>
+        </sdpi-select>
+        <div class="help-text">Select your AI provider</div>
+    </sdpi-item>
+
+    <sdpi-item label="Model">
+        <sdpi-select setting="model" id="modelSelect">
+            <!-- Options will be populated dynamically based on provider -->
+        </sdpi-select>
+        <div class="help-text">Select the AI model to use</div>
+    </sdpi-item>
+
+    <sdpi-item label="API Key">
+        <sdpi-password setting="apiKey" placeholder="Enter your API key"></sdpi-password>
+        <div class="help-text" id="apiKeyHelp">Enter your API key</div>
+    </sdpi-item>
+
+    <sdpi-item label="Code Templates">
+        <sdpi-select id="templateSelect">
+            <option value="">-- Select a template --</option>
+            <optgroup label="System Information">
+                <option value="current_time">Current Date & Time</option>
+                <option value="system_info">System Information</option>
+                <option value="disk_space">Disk Space Usage</option>
+                <option value="cpu_usage">CPU Usage Monitor</option>
+                <option value="memory_usage">Memory Usage</option>
+            </optgroup>
+            <optgroup label="File Operations">
+                <option value="list_files">List Files in Directory</option>
+                <option value="file_count">Count Files by Extension</option>
+                <option value="file_size">Get File Size</option>
+                <option value="create_backup">Create File Backup</option>
+                <option value="find_files">Find Files by Pattern</option>
+            </optgroup>
+            <optgroup label="Network & APIs">
+                <option value="weather">Fetch Weather Data</option>
+                <option value="bitcoin_price">Bitcoin Price</option>
+                <option value="random_quote">Random Quote</option>
+                <option value="ip_address">Get Public IP Address</option>
+                <option value="website_status">Check Website Status</option>
+            </optgroup>
+            <optgroup label="Utilities">
+                <option value="random_number">Random Number Generator</option>
+                <option value="random_password">Random Password Generator</option>
+                <option value="countdown">Countdown Timer</option>
+                <option value="factorial">Calculate Factorial</option>
+                <option value="fibonacci">Fibonacci Sequence</option>
+                <option value="uuid">Generate UUID</option>
+            </optgroup>
+            <optgroup label="Data Processing">
+                <option value="json_parse">Parse JSON File</option>
+                <option value="csv_read">Read CSV File</option>
+                <option value="text_stats">Text File Statistics</option>
+                <option value="word_count">Word Counter</option>
+            </optgroup>
+        </sdpi-select>
+        <div class="help-text">Select a pre-built template or write your own prompt below</div>
+    </sdpi-item>
+
+    <sdpi-item label="Prompt">
+        <sdpi-textarea setting="prompt" placeholder="Describe the Python code you want to generate..." rows="4"></sdpi-textarea>
+        <div class="help-text">Describe what you want the Python code to do</div>
+    </sdpi-item>
+
+    <div class="button-group">
+        <sdpi-button id="generateBtn">Generate Code</sdpi-button>
+        <sdpi-button id="executeBtn" variant="secondary">Execute Code</sdpi-button>
+    </div>
+
+    <div id="statusMessage" class="status-message"></div>
+
+    <sdpi-item label="Generated Code">
+        <div id="codeDisplay" class="code-display">No code generated yet. Enter a prompt and click "Generate Code".</div>
+    </sdpi-item>
+
+    <sdpi-item label="Execution Output">
+        <div id="outputDisplay" class="output-display">No output yet.</div>
+    </sdpi-item>
+
+    <script>
+        let globalSettings = {};
+        let websocket = null;
+        let uuid = null;
+        let actionInfo = null;
+
+        // Model definitions for each provider
+        const modelsByProvider = {
+            openai: [
+                { value: "gpt-4o", label: "GPT-4o (Most Capable)" },
+                { value: "gpt-4o-mini", label: "GPT-4o Mini (Fast & Cheap)" },
+                { value: "gpt-4-turbo", label: "GPT-4 Turbo" },
+                { value: "gpt-3.5-turbo", label: "GPT-3.5 Turbo (Legacy)" }
+            ],
+            anthropic: [
+                { value: "claude-3-5-sonnet-20241022", label: "Claude 3.5 Sonnet (Latest)" },
+                { value: "claude-3-5-haiku-20241022", label: "Claude 3.5 Haiku (Fast)" },
+                { value: "claude-3-opus-20240229", label: "Claude 3 Opus (Most Capable)" },
+                { value: "claude-3-sonnet-20240229", label: "Claude 3 Sonnet" },
+                { value: "claude-3-haiku-20240307", label: "Claude 3 Haiku" }
+            ],
+            google: [
+                { value: "gemini-1.5-pro", label: "Gemini 1.5 Pro (Most Capable)" },
+                { value: "gemini-1.5-flash", label: "Gemini 1.5 Flash (Fast)" },
+                { value: "gemini-1.5-flash-8b", label: "Gemini 1.5 Flash-8B (Fastest)" },
+                { value: "gemini-2.0-flash-exp", label: "Gemini 2.0 Flash (Experimental)" }
+            ],
+            groq: [
+                { value: "llama-3.3-70b-versatile", label: "Llama 3.3 70B (Recommended)" },
+                { value: "llama-3.1-70b-versatile", label: "Llama 3.1 70B" },
+                { value: "llama-3.1-8b-instant", label: "Llama 3.1 8B (Fast)" },
+                { value: "mixtral-8x7b-32768", label: "Mixtral 8x7B" }
+            ]
+        };
+
+        // API key help text for each provider
+        const apiKeyHelp = {
+            openai: 'Get your API key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a>',
+            anthropic: 'Get your API key at <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>',
+            google: 'Get your API key at <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com</a>',
+            groq: 'Get your API key at <a href="https://console.groq.com/keys" target="_blank">console.groq.com</a>'
+        };
+
+        // Code template definitions
+        const codeTemplates = {
+            // System Information
+            current_time: "Create a Python script that prints the current date and time in a readable format",
+            system_info: "Create a Python script that displays system information including OS, Python version, and hostname",
+            disk_space: "Create a Python script that shows disk space usage for all drives",
+            cpu_usage: "Create a Python script that monitors and displays current CPU usage percentage",
+            memory_usage: "Create a Python script that displays current memory usage in GB and percentage",
+
+            // File Operations
+            list_files: "Create a Python script that lists all files in the current directory with their sizes",
+            file_count: "Create a Python script that counts files by extension in the current directory",
+            file_size: "Create a Python script that gets the size of a specific file in a human-readable format",
+            create_backup: "Create a Python script that creates a timestamped backup copy of a file",
+            find_files: "Create a Python script that finds all files matching a specific pattern in a directory",
+
+            // Network & APIs
+            weather: "Create a Python script that fetches current weather data for a city using a free weather API",
+            bitcoin_price: "Create a Python script that fetches the current Bitcoin price in USD",
+            random_quote: "Create a Python script that fetches a random inspirational quote from an API",
+            ip_address: "Create a Python script that gets and displays your public IP address",
+            website_status: "Create a Python script that checks if a website is online and returns the HTTP status code",
+
+            // Utilities
+            random_number: "Create a Python script that generates a random number between 1 and 100",
+            random_password: "Create a Python script that generates a secure random password with letters, numbers, and symbols",
+            countdown: "Create a Python script that counts down from 10 to 0 with 1-second intervals",
+            factorial: "Create a Python script that calculates the factorial of a number (e.g., 10)",
+            fibonacci: "Create a Python script that generates the first 10 numbers in the Fibonacci sequence",
+            uuid: "Create a Python script that generates a random UUID",
+
+            // Data Processing
+            json_parse: "Create a Python script that reads and parses a JSON file and displays its contents",
+            csv_read: "Create a Python script that reads a CSV file and displays the first 5 rows",
+            text_stats: "Create a Python script that analyzes a text file and shows line count, word count, and character count",
+            word_count: "Create a Python script that counts the frequency of each word in a text string"
+        };
+
+        // Update model dropdown based on provider
+        function updateModelDropdown(provider) {
+            const modelSelect = document.getElementById('modelSelect');
+            const models = modelsByProvider[provider] || modelsByProvider.openai;
+
+            modelSelect.innerHTML = '';
+            models.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model.value;
+                option.textContent = model.label;
+                modelSelect.appendChild(option);
+            });
+
+            // Select the first model by default
+            if (models.length > 0) {
+                modelSelect.value = models[0].value;
+                globalSettings.model = models[0].value;
+            }
+
+            // Update API key help text
+            const helpElement = document.getElementById('apiKeyHelp');
+            if (helpElement) {
+                helpElement.innerHTML = apiKeyHelp[provider] || apiKeyHelp.openai;
+            }
+        }
+
+        // Connect to Stream Deck - called automatically by Stream Deck
+        function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, inInfo, inActionInfo) {
+            uuid = inUUID;
+            actionInfo = JSON.parse(inActionInfo);
+
+            // Parse settings from actionInfo
+            if (actionInfo && actionInfo.payload) {
+                globalSettings = actionInfo.payload.settings || {};
+            }
+
+            // Set default provider if not set
+            if (!globalSettings.provider) {
+                globalSettings.provider = 'openai';
+            }
+
+            // Open WebSocket connection
+            websocket = new WebSocket('ws://127.0.0.1:' + inPort);
+
+            websocket.onopen = function() {
+                const json = {
+                    event: inRegisterEvent,
+                    uuid: inUUID
+                };
+                websocket.send(JSON.stringify(json));
+                console.log('Connected to Stream Deck');
+            };
+
+            websocket.onmessage = function(evt) {
+                try {
+                    const jsonObj = JSON.parse(evt.data);
+                    const event = jsonObj.event;
+                    const payload = jsonObj.payload;
+
+                    console.log('Received from Stream Deck:', event, payload);
+
+                    if (event === 'didReceiveSettings') {
+                        globalSettings = payload.settings || {};
+                        console.log('Settings updated:', globalSettings);
+
+                        // Update model dropdown based on current provider
+                        if (globalSettings.provider) {
+                            updateModelDropdown(globalSettings.provider);
+                        }
+
+                        // Display generated code if available
+                        if (globalSettings.generatedCode) {
+                            document.getElementById('codeDisplay').textContent = globalSettings.generatedCode;
+                        }
+                    } else if (event === 'sendToPropertyInspector') {
+                        handlePluginMessage(payload);
+                    }
+                } catch (error) {
+                    console.error('Error processing message from Stream Deck:', error);
+                }
+            };
+
+            // Initialize UI after connection
+            setTimeout(() => {
+                updateModelDropdown(globalSettings.provider || 'openai');
+                if (globalSettings.generatedCode) {
+                    document.getElementById('codeDisplay').textContent = globalSettings.generatedCode;
+                }
+            }, 100);
+        }
+
+        // Send message to plugin
+        function sendToPlugin(payload) {
+            if (websocket && uuid) {
+                const json = {
+                    action: actionInfo ? actionInfo.action : undefined,
+                    event: 'sendToPlugin',
+                    context: uuid,
+                    payload: payload
+                };
+                websocket.send(JSON.stringify(json));
+                console.log('Sent to plugin:', json);
+            } else {
+                console.warn('sendToPlugin called before websocket/uuid is available', {
+                    hasWebsocket: !!websocket,
+                    uuid
+                });
+            }
+        }
+
+        // Update settings - this will be called by SDPI components automatically
+        function setSettings(settings) {
+            if (websocket && uuid) {
+                const json = {
+                    event: 'setSettings',
+                    context: uuid,
+                    payload: settings
+                };
+                websocket.send(JSON.stringify(json));
+                console.log('Settings saved:', settings);
+            } else {
+                console.warn('setSettings called before websocket/uuid is available', {
+                    hasWebsocket: !!websocket,
+                    uuid
+                });
+            }
+        }
+
+        // Handle messages from plugin
+        function handlePluginMessage(payload) {
+            console.log('handlePluginMessage called with:', payload);
+
+            if (payload.event === 'generationStarted') {
+                showStatus('Generating code...', 'info');
+            } else if (payload.event === 'codeGenerated') {
+                console.log('Code generated, updating display with:', payload.code);
+                const codeDisplay = document.getElementById('codeDisplay');
+                if (codeDisplay) {
+                    codeDisplay.textContent = payload.code;
+                    console.log('Code display updated');
+                } else {
+                    console.error('codeDisplay element not found!');
+                }
+                showStatus('Code generated successfully!', 'success');
+                setTimeout(() => hideStatus(), 3000);
+            } else if (payload.event === 'generationError') {
+                console.error('Generation error:', payload.error);
+                showStatus(`Error: ${payload.error}`, 'error');
+            } else if (payload.event === 'executionComplete') {
+                console.log('Execution complete:', payload);
+                const output = payload.output || 'No output';
+                const outputDisplay = document.getElementById('outputDisplay');
+                if (outputDisplay) {
+                    outputDisplay.textContent = `Exit Code: ${payload.exitCode}\n\n${output}`;
+                }
+                if (payload.exitCode === 0) {
+                    showStatus('Execution completed successfully!', 'success');
+                } else {
+                    showStatus('Execution failed. Check output below.', 'error');
+                }
+                setTimeout(() => hideStatus(), 3000);
+            }
+        }
+
+        // Handle provider selection
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('providerSelect').addEventListener('change', (e) => {
+                const provider = e.target.value;
+                console.log('Provider changed to:', provider);
+                updateModelDropdown(provider);
+                // SDPI components will automatically save the provider setting
+                // We just need to update the model dropdown
+            });
+
+            // Handle template selection
+            document.getElementById('templateSelect').addEventListener('change', (e) => {
+                const templateKey = e.target.value;
+                if (templateKey && codeTemplates[templateKey]) {
+                    const promptTextarea = document.querySelector('sdpi-textarea[setting="prompt"]');
+                    if (promptTextarea) {
+                        promptTextarea.value = codeTemplates[templateKey];
+                        // Trigger a change event so SDPI components saves it
+                        promptTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+                        showStatus('Template loaded! Click "Generate Code" to create the script.', 'info');
+                        setTimeout(() => hideStatus(), 3000);
+                    }
+                }
+            });
+
+            // Generate Code button
+            document.getElementById('generateBtn').addEventListener('click', () => {
+                // Get fresh values from the form elements
+                const apiKeyInput = document.querySelector('sdpi-password[setting="apiKey"]');
+                const promptTextarea = document.querySelector('sdpi-textarea[setting="prompt"]');
+                const providerSelect = document.getElementById('providerSelect');
+                const modelSelect = document.getElementById('modelSelect');
+
+                const apiKey = apiKeyInput ? apiKeyInput.value : globalSettings.apiKey;
+                const prompt = promptTextarea ? promptTextarea.value : globalSettings.prompt;
+                const provider = providerSelect ? providerSelect.value : (globalSettings.provider || 'openai');
+                const model = modelSelect ? modelSelect.value : (globalSettings.model || '');
+
+                // Ensure model list and selection match selected provider
+                const modelsForProvider = modelsByProvider[provider] || modelsByProvider.openai;
+                let finalModel = model;
+                if (!modelsForProvider.some(m => m.value === finalModel)) {
+                    // The currently selected model doesn't belong to this provider
+                    // Rebuild the dropdown for the selected provider and use its default model
+                    updateModelDropdown(provider);
+                    const refreshedModelSelect = document.getElementById('modelSelect');
+                    finalModel = refreshedModelSelect ? refreshedModelSelect.value : (modelsForProvider[0]?.value || "");
+                    console.log('Adjusted model to match provider:', { provider, finalModel });
+                }
+
+                console.log('Form elements:', {
+                    apiKeyInput,
+                    promptTextarea,
+                    providerSelect,
+                    modelSelect
+                });
+                console.log('Values:', {
+                    apiKey: apiKey ? '***' : 'empty',
+                    prompt: prompt ? prompt.substring(0, 50) + '...' : 'empty',
+                    provider,
+                    model: finalModel
+                });
+                console.log('Global settings:', globalSettings);
+
+                if (!apiKey) {
+                    showStatus('Please enter your API key', 'error');
+                    return;
+                }
+
+                if (!prompt || prompt.trim() === '') {
+                    showStatus('Please enter a prompt', 'error');
+                    return;
+                }
+
+                // Update global settings
+                globalSettings.apiKey = apiKey;
+                globalSettings.prompt = prompt;
+                globalSettings.provider = provider;
+                globalSettings.model = finalModel;
+
+                const payload = {
+                    event: 'generateCode',
+                    prompt: prompt,
+                    apiKey: apiKey,
+                    provider: provider,
+                    model: finalModel
+                };
+
+                console.log('Sending payload to plugin:', {
+                    ...payload,
+                    apiKey: '***'
+                });
+
+                // Send message to plugin to generate code
+                sendToPlugin(payload);
+            });
+
+            // Execute Code button
+            document.getElementById('executeBtn').addEventListener('click', () => {
+                if (!globalSettings.generatedCode) {
+                    showStatus('No code to execute. Generate code first.', 'error');
+                    return;
+                }
+
+                // Send message to plugin to execute code
+                sendToPlugin({
+                    event: 'executeCode'
+                });
+            });
+        });
+
+        // Helper functions
+        function showStatus(message, type) {
+            const statusEl = document.getElementById('statusMessage');
+            statusEl.textContent = message;
+            statusEl.className = `status-message ${type}`;
+            statusEl.style.display = 'block';
+        }
+
+        function hideStatus() {
+            const statusEl = document.getElementById('statusMessage');
+            statusEl.style.display = 'none';
+        }
+    </script>
+</body>
+
+</html>
+

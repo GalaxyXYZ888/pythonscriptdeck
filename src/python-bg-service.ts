@@ -1,27 +1,9 @@
 import streamDeck, { DidReceiveSettingsEvent, KeyDownEvent, WillAppearEvent, WillDisappearEvent } from "@elgato/streamdeck";
 import { PythonServiceSettings } from "./actions/python-service";
-import { ChildProcess, spawn } from "child_process";
-import * as os from "os";
-import * as path from "node:path";
-
-const pythonErrorMap: { [key: string]: string } = {
-	"SyntaxError": "Python\nSyntax\nError",
-	"NameError": "Python\nName\nError",
-	"TypeError": "Python\nType\nError",
-	"ValueError": "Python\nValue\nError",
-	"ZeroDivisionError": "Python\nZeroDiv\nError",
-	"IndexError": "Python\nIndex\nError",
-	"KeyError": "Python\nKey\nError",
-	"AttributeError": "Python\nAttribute\nError",
-	"ImportError": "Python\nImport\nError",
-	"No such file or directory": "Python\nFile\nError",
-	"ModuleNotFoundError": "Python\nModule\nError",
-	"RuntimeError": "Python\nRuntime\nError",
-	"MemoryError": "Python\nMemory\nError",
-	"OverflowError": "Python\nOverflow\nError",
-	"SystemError": "Python\nSystem\nError",
-	"Microsoft Store": "Python\nnot found\nError"
-};
+import { ChildProcess } from "child_process";
+import * as fs from "fs";
+import { createChildProcess, mapPythonError } from "./utils/python-utils";
+import { processManager } from "./utils/process-manager";
 
 export enum ServiceState {
 	running,
@@ -38,6 +20,7 @@ type NormalizedSettings = PythonServiceSettings & {
 	interval: number;
 	displayValues: boolean;
 	useVenv: boolean;
+	pythonInterpreter?: string;
 };
 
 class PythonBackgroundService {
@@ -72,11 +55,14 @@ class PythonBackgroundService {
 				streamDeck.logger.info(`stopping execution of the action ${ev.action.manifestId}, id: ${ev.action.id}`);
 				clearInterval(tracked.timerId);
 			}
+			// Clean up any processes associated with this action
+			// Note: We can't clean up specific process IDs since they include timestamps,
+			// but the processes will auto-cleanup when they exit
 			this.trackedActions.splice(index, 1);
 		}
 	}
 
-	start(ev: KeyDownEvent<PythonServiceSettings>) {
+	async start(ev: KeyDownEvent<PythonServiceSettings>) {
 		streamDeck.logger.info("starting Background Service");
 		this.trackedActions.forEach(tracked => {
 			if (tracked.timerId) {
@@ -85,10 +71,10 @@ class PythonBackgroundService {
 			tracked.timerId = this.createTimer(tracked.ev);
 		});
 		this.state = ServiceState.running;
-		ev.action.setImage("imgs/actions/pyServiceRunning.png");
+		await ev.action.setImage("imgs/actions/pyServiceRunning.png");
 	}
 
-	stop(ev: KeyDownEvent<PythonServiceSettings>) {
+	async stop(ev: KeyDownEvent<PythonServiceSettings>) {
 		streamDeck.logger.info("stopping Background Service");
 		this.trackedActions.forEach(tracked => {
 			if (tracked.timerId) {
@@ -98,7 +84,7 @@ class PythonBackgroundService {
 		});
 		this.state = ServiceState.stopped;
 		streamDeck.logger.info(`stopping execution of the action ${ev.action.manifestId}, id: ${ev.action.id}`);
-		ev.action.setImage("imgs/actions/pyServiceStopped.png");
+		await ev.action.setImage("imgs/actions/pyServiceStopped.png");
 	}
 
 	getState = (): ServiceState => {
@@ -109,81 +95,69 @@ class PythonBackgroundService {
 		const settings = this.normalizeSettings(ev.payload.settings);
 		const scriptPath = settings.path;
 		let pythonProcess: ChildProcess | undefined;
-		if (scriptPath) {
-			streamDeck.logger.debug(`path to script is: ${scriptPath}`);
-			pythonProcess = this.createChildProcess(settings.useVenv, settings.venvPath, scriptPath);
 
-			if (pythonProcess && pythonProcess.stdout) {
-				streamDeck.logger.debug("start reading output");
-				pythonProcess.stdout.on("data", (data: { toString: () => string }) => {
-					const output = data.toString().trim();
-					streamDeck.logger.info(`stdout: ${output}`);
-					if (settings.displayValues) {
-						ev.action.setTitle(output);
-					}
-					if (settings.image1 && output === (settings.value1 ?? "")) {
-						ev.action.setImage(settings.image1);
-					} else if (settings.image2 && output === (settings.value2 ?? "")) {
-						ev.action.setImage(settings.image2);
-					} else {
-						ev.action.setImage("imgs/actions/pyServiceIcon.png");
-					}
-				});
+		if (!scriptPath) {
+			streamDeck.logger.warn("PythonService: No script path configured");
+			return;
+		}
 
-				pythonProcess.stderr?.on("data", (data: { toString: () => string }) => {
-					const errorString = data.toString().trim().replace(/(?:\r\n|\r|\n)/g, " ");
-					streamDeck.logger.error(`stderr: ${errorString}`);
-					ev.action.setImage("imgs/actions/pyServiceIconFail.png");
-					let errorTitle = "python\nother\nissue";
-					for (const key in pythonErrorMap) {
-						if (errorString.includes(key)) {
-							errorTitle = pythonErrorMap[key];
-							break;
-						}
-					}
-					if (errorTitle === "python\nother\nissue") {
-						streamDeck.logger.error(errorString);
-					}
-					ev.action.setTitle(errorTitle);
-					ev.action.showAlert();
-				});
+		if (!fs.existsSync(scriptPath)) {
+			streamDeck.logger.error(`PythonService: Script not found at path: ${scriptPath}`);
+			ev.action.setImage("imgs/actions/pyServiceIconFail.png");
+			ev.action.setTitle("Script\nNot Found");
+			ev.action.showAlert();
+			return;
+		}
 
-				pythonProcess.on("close", (code: number | null) => {
-					streamDeck.logger.debug(`child process exited with code ${code}`);
-				});
-			}
+		streamDeck.logger.debug(`path to script is: ${scriptPath}`);
+		pythonProcess = createChildProcess(settings.useVenv, settings.venvPath, scriptPath, settings.pythonInterpreter);
+
+		// Register process for lifecycle management with a unique ID for each execution
+		// Background services get a longer timeout (10 minutes) since they may run longer
+		if (pythonProcess) {
+			const processId = `${ev.action.id}-${Date.now()}`;
+			processManager.register(processId, pythonProcess, {
+				timeout: 10 * 60 * 1000, // 10 minutes
+				enabled: true
+			});
+		}
+
+		if (pythonProcess && pythonProcess.stdout) {
+			streamDeck.logger.debug("start reading output");
+			pythonProcess.stdout.on("data", async (data: { toString: () => string }) => {
+				const output = data.toString().trim();
+				streamDeck.logger.info(`stdout: ${output}`);
+				if (settings.displayValues) {
+					await ev.action.setTitle(output);
+				}
+				if (settings.image1 && output === (settings.value1 ?? "")) {
+					await ev.action.setImage(settings.image1);
+				} else if (settings.image2 && output === (settings.value2 ?? "")) {
+					await ev.action.setImage(settings.image2);
+				} else {
+					await ev.action.setImage("imgs/actions/pyServiceIcon.png");
+				}
+			});
+
+			pythonProcess.stderr?.on("data", async (data: { toString: () => string }) => {
+				const errorString = data.toString().trim().replace(/(?:\r\n|\r|\n)/g, " ");
+				streamDeck.logger.error(`stderr: ${errorString}`);
+				await ev.action.setImage("imgs/actions/pyServiceIconFail.png");
+				const errorTitle = mapPythonError(errorString);
+				if (errorTitle === "python\nother\nissue") {
+					streamDeck.logger.error(errorString);
+				}
+				await ev.action.setTitle(errorTitle);
+				await ev.action.showAlert();
+			});
+
+			pythonProcess.on("close", (code: number | null) => {
+				streamDeck.logger.debug(`child process exited with code ${code}`);
+			});
 		}
 	}
 
-	createChildProcess(useVenv: boolean, venvPath: string | undefined, scriptPath: string) {
-		let pythonProcess: ChildProcess | undefined;
-		const isWindows = os.platform() === "win32";
-		const normalizedScriptPath = isWindows ? path.win32.normalize(scriptPath) : scriptPath;
-
-		if (useVenv && venvPath) {
-			if (isWindows) {
-				const pythonExecutable = path.win32.join(venvPath, "Scripts", "python.exe");
-				pythonProcess = spawn(pythonExecutable, [normalizedScriptPath], { windowsHide: true });
-			} else {
-				const pythonExecutable = path.posix.join(venvPath, "bin", "python3");
-				pythonProcess = spawn(pythonExecutable, [normalizedScriptPath]);
-			}
-		} else {
-			if (isWindows) {
-				pythonProcess = spawn("python", [normalizedScriptPath], { windowsHide: true });
-			} else {
-				pythonProcess = spawn("python3", [normalizedScriptPath]);
-			}
-		}
-
-		pythonProcess?.on("error", (error: Error) => {
-			streamDeck.logger.error(`Failed to start python process: ${error.message}`);
-		});
-
-		return pythonProcess;
-	}
-
-	createTimer(ev: WillAppearEvent<PythonServiceSettings> | DidReceiveSettingsEvent<PythonServiceSettings> | KeyDownEvent<PythonServiceSettings>) {
+	private createTimer(ev: WillAppearEvent<PythonServiceSettings> | DidReceiveSettingsEvent<PythonServiceSettings> | KeyDownEvent<PythonServiceSettings>) {
 		const settings = this.normalizeSettings(ev.payload.settings);
 		const intervalSeconds = settings.interval;
 		return setInterval(() => {
