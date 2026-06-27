@@ -1,10 +1,38 @@
 import streamDeck, { action, DidReceiveSettingsEvent, KeyDownEvent, SingletonAction, WillAppearEvent, WillDisappearEvent } from "@elgato/streamdeck";
 import { pyBGService, ServiceState } from "../python-bg-service";
 import { getFileNameFromPath } from "../utils/python-utils";
+import * as fs from "fs";
+import { applyImageWithFallback } from "../utils/image-utils";
 
 
 @action({ UUID: "com.nicoohagedorn.pythonscriptdeck.service" })
 export class PythonService extends SingletonAction<PythonServiceSettings> {
+	private imageWatchers: Map<string, fs.FSWatcher> = new Map();
+
+	private setupImageWatcher(action: any, defaultImage: string | undefined, fallbackPath: string): void {
+		const existingWatcher = this.imageWatchers.get(action.id);
+		if (existingWatcher) {
+			existingWatcher.close();
+			this.imageWatchers.delete(action.id);
+		}
+
+		applyImageWithFallback(action, defaultImage, fallbackPath);
+
+		if (defaultImage && fs.existsSync(defaultImage)) {
+			try {
+				const watcher = fs.watch(defaultImage, async (eventType) => {
+					if (eventType === "change") {
+						streamDeck.logger.info(`Custom default image changed on disk: ${defaultImage}`);
+						await applyImageWithFallback(action, defaultImage, fallbackPath);
+					}
+				});
+				this.imageWatchers.set(action.id, watcher);
+			} catch (error) {
+				streamDeck.logger.error(`Failed to watch custom image ${defaultImage}: ${error}`);
+			}
+		}
+	}
+
 	/**
 	 * The {@link SingletonAction.onWillAppear} event is useful for setting the visual representation of an action when it becomes visible. This could be due to the Stream Deck first
 	 * starting up, or the user navigating between pages / folders etc.. There is also an inverse of this event in the form of {@link streamDeck.client.onWillDisappear}. In this example,
@@ -13,7 +41,7 @@ export class PythonService extends SingletonAction<PythonServiceSettings> {
 	async onWillAppear(ev: WillAppearEvent<PythonServiceSettings>): Promise<void> {
 		const settings = ev.payload.settings;
 		if (settings.path && settings.path.includes(".py")) {
-			await ev.action.setImage("imgs/actions/pyServiceIcon.png");
+			this.setupImageWatcher(ev.action, settings.defaultImage, "imgs/actions/pyServiceIcon.png");
 			let venvname = "";
 			if (settings.useVenv && settings.venvPath) {
 				const venvFolderName = getFileNameFromPath(settings.venvPath);
@@ -29,13 +57,19 @@ export class PythonService extends SingletonAction<PythonServiceSettings> {
 	async onDidReceiveSettings(ev: DidReceiveSettingsEvent<PythonServiceSettings>): Promise<void> {
 		const settings = ev.payload.settings;
 		if (settings.path && settings.path.includes(".py")) {
-			await ev.action.setImage("imgs/actions/pyServiceIcon.png");
+			this.setupImageWatcher(ev.action, settings.defaultImage, "imgs/actions/pyServiceIcon.png");
 			let venvname = "";
 			if (settings.useVenv && settings.venvPath) {
 				const venvFolderName = getFileNameFromPath(settings.venvPath);
 				venvname = `venv:\n ${venvFolderName}\n`;
 			}
 			await ev.action.setTitle(`${venvname}${getFileNameFromPath(settings.path)}`);
+		} else {
+			const existingWatcher = this.imageWatchers.get(ev.action.id);
+			if (existingWatcher) {
+				existingWatcher.close();
+				this.imageWatchers.delete(ev.action.id);
+			}
 		}
 		pyBGService.registerAction(ev);
 	}
@@ -43,6 +77,11 @@ export class PythonService extends SingletonAction<PythonServiceSettings> {
 	onWillDisappear(ev: WillDisappearEvent<PythonServiceSettings>): Promise<void> | void {
 		streamDeck.logger.info("onWillDisappear - unregister Action");
 		pyBGService.unregisterAction(ev);
+		const watcher = this.imageWatchers.get(ev.action.id);
+		if (watcher) {
+			watcher.close();
+			this.imageWatchers.delete(ev.action.id);
+		}
 	}
 
 
@@ -97,6 +136,7 @@ export class PythonService extends SingletonAction<PythonServiceSettings> {
  */
 export type PythonServiceSettings = {
 	path?: string;
+	defaultImage?: string;
 	value1?: string;
 	image1?: string;
 	value2?: string;
@@ -107,5 +147,4 @@ export type PythonServiceSettings = {
 	interval?: number | string;
 	id?: string;
 	pythonInterpreter?: string;
-
 };

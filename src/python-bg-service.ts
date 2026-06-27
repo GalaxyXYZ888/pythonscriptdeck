@@ -4,6 +4,7 @@ import { ChildProcess } from "child_process";
 import * as fs from "fs";
 import { createChildProcess, mapPythonError } from "./utils/python-utils";
 import { processManager } from "./utils/process-manager";
+import { applyImageWithFallback } from "./utils/image-utils";
 
 export enum ServiceState {
 	running,
@@ -131,11 +132,11 @@ class PythonBackgroundService {
 					await ev.action.setTitle(output);
 				}
 				if (settings.image1 && output === (settings.value1 ?? "")) {
-					await ev.action.setImage(settings.image1);
+					await applyImageWithFallback(ev.action, settings.image1, "imgs/actions/pyServiceIcon.png");
 				} else if (settings.image2 && output === (settings.value2 ?? "")) {
-					await ev.action.setImage(settings.image2);
+					await applyImageWithFallback(ev.action, settings.image2, "imgs/actions/pyServiceIcon.png");
 				} else {
-					await ev.action.setImage("imgs/actions/pyServiceIcon.png");
+					await applyImageWithFallback(ev.action, settings.defaultImage, "imgs/actions/pyServiceIcon.png");
 				}
 			});
 

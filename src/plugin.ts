@@ -1,12 +1,12 @@
-import streamDeck, { LogLevel } from "@elgato/streamdeck";
+import streamDeck from "@elgato/streamdeck";
 
 import { PythonScript } from "./actions/python-script";
 import { PythonService } from "./actions/python-service";
 import { pyBGService } from "./python-bg-service";
 import { processManager } from "./utils/process-manager";
 
-// Configure logging level - use INFO for production, TRACE for debugging
-const logLevel = process.env.STREAMDECK_LOG_LEVEL === "trace" ? LogLevel.TRACE : LogLevel.INFO;
+// Configure logging level - use info for production, trace for debugging
+const logLevel = process.env.STREAMDECK_LOG_LEVEL === "trace" ? "trace" : "info";
 streamDeck.logger.setLevel(logLevel);
 
 // Register all actions

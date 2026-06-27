@@ -3,9 +3,36 @@ import { ChildProcess } from "child_process";
 import * as fs from "fs";
 import { createChildProcess, getFileNameFromPath, mapPythonError } from "../utils/python-utils";
 import { processManager } from "../utils/process-manager";
+import { applyImageWithFallback } from "../utils/image-utils";
 
 @action({ UUID: "com.nicoohagedorn.pythonscriptdeck.script" })
 export class PythonScript extends SingletonAction<PythonScriptSettings> {
+	private imageWatchers: Map<string, fs.FSWatcher> = new Map();
+
+	private setupImageWatcher(action: any, defaultImage: string | undefined, fallbackPath: string): void {
+		const existingWatcher = this.imageWatchers.get(action.id);
+		if (existingWatcher) {
+			existingWatcher.close();
+			this.imageWatchers.delete(action.id);
+		}
+
+		applyImageWithFallback(action, defaultImage, fallbackPath);
+
+		if (defaultImage && fs.existsSync(defaultImage)) {
+			try {
+				const watcher = fs.watch(defaultImage, async (eventType) => {
+					if (eventType === "change") {
+						streamDeck.logger.info(`Custom default image changed on disk: ${defaultImage}`);
+						await applyImageWithFallback(action, defaultImage, fallbackPath);
+					}
+				});
+				this.imageWatchers.set(action.id, watcher);
+			} catch (error) {
+				streamDeck.logger.error(`Failed to watch custom image ${defaultImage}: ${error}`);
+			}
+		}
+	}
+
 	/**
 	 * The {@link SingletonAction.onWillAppear} event is useful for setting the visual representation of an action when it becomes visible. This could be due to the Stream Deck first
 	 * starting up, or the user navigating between pages / folders etc.. There is also an inverse of this event in the form of {@link streamDeck.client.onWillDisappear}. In this example,
@@ -14,7 +41,11 @@ export class PythonScript extends SingletonAction<PythonScriptSettings> {
 	async onWillAppear(ev: WillAppearEvent<PythonScriptSettings>): Promise<void> {
 		const settings = ev.payload.settings;
 		if (settings.path && settings.path.includes(".py")) {
-			await ev.action.setImage("imgs/actions/gemini_icons/pyFileLoaded.png");
+			const fallback = (settings.useVenv && settings.venvPath)
+				? "imgs/actions/gemini_icons/pyVirtEnvActive.png"
+				: "imgs/actions/gemini_icons/pyFileLoaded.png";
+			this.setupImageWatcher(ev.action, settings.defaultImage, fallback);
+
 			let venvname = "";
 			if (settings.useVenv && settings.venvPath) {
 				const venvFolderName = getFileNameFromPath(settings.venvPath);
@@ -28,14 +59,22 @@ export class PythonScript extends SingletonAction<PythonScriptSettings> {
 		const settings = ev.payload.settings;
 		if (settings.path && settings.path.includes(".py")) {
 			let venvname = "";
+			const fallback = (settings.useVenv && settings.venvPath)
+				? "imgs/actions/gemini_icons/pyVirtEnvActive.png"
+				: "imgs/actions/gemini_icons/pyFileLoaded.png";
+
 			if (settings.useVenv && settings.venvPath) {
 				const venvFolderName = getFileNameFromPath(settings.venvPath);
 				venvname = `venv:\n ${venvFolderName}\n`;
-				await ev.action.setImage("imgs/actions/gemini_icons/pyVirtEnvActive.png");
-			} else {
-				await ev.action.setImage("imgs/actions/gemini_icons/pyFileLoaded.png");
 			}
+			this.setupImageWatcher(ev.action, settings.defaultImage, fallback);
 			await ev.action.setTitle(`${venvname}${getFileNameFromPath(settings.path)}`);
+		} else {
+			const existingWatcher = this.imageWatchers.get(ev.action.id);
+			if (existingWatcher) {
+				existingWatcher.close();
+				this.imageWatchers.delete(ev.action.id);
+			}
 		}
 	}
 
@@ -88,11 +127,14 @@ export class PythonScript extends SingletonAction<PythonScriptSettings> {
 					}
 
 					if (settings.image1 && output === (settings.value1 ?? "")) {
-						await ev.action.setImage(settings.image1);
+						await applyImageWithFallback(ev.action, settings.image1, "imgs/actions/gemini_icons/pyFileLoaded.png");
 					} else if (settings.image2 && output === (settings.value2 ?? "")) {
-						await ev.action.setImage(settings.image2);
+						await applyImageWithFallback(ev.action, settings.image2, "imgs/actions/gemini_icons/pyFileLoaded.png");
 					} else {
-						await ev.action.setImage("imgs/actions/gemini_icons/pyFileLoaded.png");
+						const fallback = (settings.useVenv && settings.venvPath)
+							? "imgs/actions/gemini_icons/pyVirtEnvActive.png"
+							: "imgs/actions/gemini_icons/pyFileLoaded.png";
+						await applyImageWithFallback(ev.action, settings.defaultImage, fallback);
 					}
 				});
 
@@ -120,6 +162,11 @@ export class PythonScript extends SingletonAction<PythonScriptSettings> {
 	onWillDisappear(ev: WillDisappearEvent<PythonScriptSettings>): void {
 		streamDeck.logger.info(`PythonScript: Cleaning up process for action ${ev.action.id}`);
 		processManager.cleanup(ev.action.id);
+		const watcher = this.imageWatchers.get(ev.action.id);
+		if (watcher) {
+			watcher.close();
+			this.imageWatchers.delete(ev.action.id);
+		}
 	}
 }
 
@@ -128,6 +175,7 @@ export class PythonScript extends SingletonAction<PythonScriptSettings> {
  */
 export type PythonScriptSettings = {
 	path?: string;
+	defaultImage?: string;
 	value1?: string;
 	image1?: string;
 	value2?: string;
@@ -136,5 +184,4 @@ export type PythonScriptSettings = {
 	useVenv?: boolean;
 	venvPath?: string;
 	pythonInterpreter?: string;
-
 };
